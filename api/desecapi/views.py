@@ -25,7 +25,10 @@ from desecapi import metrics, models, serializers
 from desecapi.exceptions import ConcurrencyException
 from desecapi.pdns import get_serials
 from desecapi.pdns_change_tracker import PDNSChangeTracker
-from desecapi.permissions import ManageTokensPermission, IsDomainOwner, IsOwner, IsVPNClient, WithinDomainLimitOnPOST
+from desecapi.permissions import (
+    IsDomainOwner, IsOwner, IsVPNClient, ManageTokensPermission, TokenHasDomainObjectPermission,
+    TokenHasViewDomainDynPermission, TokenHasViewDomainPermission, WithinDomainLimitOnPOST,
+)
 from desecapi.renderers import PlainTextRenderer
 
 
@@ -66,18 +69,17 @@ class IdempotentDestroyMixin:
 
 
 class DomainViewMixin:
+    permission_classes = (IsAuthenticated, IsDomainOwner, TokenHasViewDomainPermission,)
+
+    @property
+    def domain(self):
+        try:
+            return self.request.user.domains.get(name=self.kwargs['name'])
+        except models.Domain.DoesNotExist:
+            raise Http404
 
     def get_serializer_context(self):
         return {**super().get_serializer_context(), 'domain': self.domain}
-
-    def initial(self, request, *args, **kwargs):
-        # noinspection PyUnresolvedReferences
-        super().initial(request, *args, **kwargs)
-        try:
-            # noinspection PyAttributeOutsideInit, PyUnresolvedReferences
-            self.domain = self.request.user.domains.get(name=self.kwargs['name'])
-        except models.Domain.DoesNotExist:
-            raise Http404
 
 
 class TokenViewSet(IdempotentDestroyMixin, viewsets.ModelViewSet):
@@ -105,7 +107,7 @@ class DomainViewSet(IdempotentDestroyMixin,
                     mixins.ListModelMixin,
                     viewsets.GenericViewSet):
     serializer_class = serializers.DomainSerializer
-    permission_classes = (IsAuthenticated, IsOwner, WithinDomainLimitOnPOST)
+    permission_classes = (IsAuthenticated, IsOwner, WithinDomainLimitOnPOST, TokenHasDomainObjectPermission)
     lookup_field = 'name'
     lookup_value_regex = r'[^/]+'
 
@@ -157,7 +159,6 @@ class SerialList(generics.ListAPIView):
 
 class RRsetDetail(IdempotentDestroyMixin, DomainViewMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = serializers.RRsetSerializer
-    permission_classes = (IsAuthenticated, IsDomainOwner,)
 
     @property
     def throttle_scope(self):
@@ -195,7 +196,6 @@ class RRsetDetail(IdempotentDestroyMixin, DomainViewMixin, generics.RetrieveUpda
 
 class RRsetList(EmptyPayloadMixin, DomainViewMixin, generics.ListCreateAPIView, generics.UpdateAPIView):
     serializer_class = serializers.RRsetSerializer
-    permission_classes = (IsAuthenticated, IsDomainOwner,)
 
     @property
     def throttle_scope(self):
@@ -221,6 +221,7 @@ class RRsetList(EmptyPayloadMixin, DomainViewMixin, generics.ListCreateAPIView, 
         # is fine as per https://www.django-rest-framework.org/api-guide/serializers/#serializing-multiple-objects.
         # We skip checking object permissions here to avoid evaluating the queryset. The user can access all his RRsets
         # anyways.
+        ### TODO include permission check
         return self.filter_queryset(self.get_queryset())
 
     def get_serializer(self, *args, **kwargs):
@@ -268,6 +269,7 @@ class Root(APIView):
 
 class DynDNS12Update(generics.GenericAPIView):
     authentication_classes = (auth.TokenAuthentication, auth.BasicTokenAuthentication, auth.URLParamAuthentication,)
+    permission_classes = [TokenHasViewDomainDynPermission]
     renderer_classes = [PlainTextRenderer]
     throttle_scope = 'dyndns'
 
